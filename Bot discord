@@ -1,0 +1,2761 @@
+// ============================================
+// ESTRUTURA DE PASTAS DO PROJETO:
+// ============================================
+// /
+// ├── src/
+// │   ├── index.ts
+// │   ├── handlers/
+// │   │   ├── commandHandler.ts
+// │   │   └── eventHandler.ts
+// │   ├── commands/
+// │   │   ├── admin/
+// │   │   ├── mod/
+// │   │   ├── utils/
+// │   │   ├── politica/
+// │   │   ├── economia/
+// │   │   ├── memes/
+// │   │   └── sistema/
+// │   ├── events/
+// │   │   ├── ready.ts
+// │   │   └── interactionCreate.ts
+// │   ├── config/
+// │   │   └── config.ts
+// │   └── utils/
+// │       ├── database.ts
+// │       └── logger.ts
+// ├── .env
+// ├── package.json
+// └── tsconfig.json
+
+// ============================================
+// ARQUIVO: package.json
+// ============================================
+{
+  "name": "discord-bot-mjd",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.5",
+    "typescript": "^5.3.3",
+    "ts-node": "^10.9.2"
+  }
+}
+
+// ============================================
+// ARQUIVO: .env
+// ============================================
+TOKEN=seu_token_aqui
+CLIENT_ID=seu_client_id_aqui
+GUILD_ID=seu_guild_id_aqui (opcional para testes)
+
+// ============================================
+// ARQUIVO: tsconfig.json
+// ============================================
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true
+  }
+}
+
+// ============================================
+// ARQUIVO: src/config/config.ts
+// ============================================
+import { config } from "dotenv";
+config();
+
+export default {
+  token: process.env.TOKEN!,
+  clientId: process.env.CLIENT_ID!,
+  guildId: process.env.GUILD_ID,
+  logLevel: "info"
+};
+
+// ============================================
+// ARQUIVO: src/utils/logger.ts
+// ============================================
+export class Logger {
+  static info(message: string) {
+    console.log(`[INFO] ${new Date().toISOString()} - ${message}`);
+  }
+
+  static error(message: string, error?: any) {
+    console.error(`[ERROR] ${new Date().toISOString()} - ${message}`, error || "");
+  }
+
+  static warn(message: string) {
+    console.warn(`[WARN] ${new Date().toISOString()} - ${message}`);
+  }
+
+  static debug(message: string) {
+    console.log(`[DEBUG] ${new Date().toISOString()} - ${message}`);
+  }
+}
+
+// ============================================
+// ARQUIVO: src/utils/database.ts
+// ============================================
+import fs from "fs";
+import path from "path";
+
+const DB_PATH = path.join(__dirname, "../../data/database.json");
+
+export class Database {
+  private static data: any = {
+    guilds: {},
+    users: {},
+    economy: {},
+    infractions: {},
+    xp: {},
+    politics: {}
+  };
+
+  static load() {
+    try {
+      if (fs.existsSync(DB_PATH)) {
+        const raw = fs.readFileSync(DB_PATH, "utf8");
+        this.data = JSON.parse(raw);
+      } else {
+        this.save();
+      }
+    } catch (error) {
+      console.error("Erro ao carregar DB:", error);
+    }
+  }
+
+  static save() {
+    try {
+      const dir = path.dirname(DB_PATH);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(DB_PATH, JSON.stringify(this.data, null, 2));
+    } catch (error) {
+      console.error("Erro ao salvar DB:", error);
+    }
+  }
+
+  static get(category: string, key: string) {
+    return this.data[category]?.[key];
+  }
+
+  static set(category: string, key: string, value: any) {
+    if (!this.data[category]) this.data[category] = {};
+    this.data[category][key] = value;
+    this.save();
+  }
+
+  static push(category: string, key: string, value: any) {
+    if (!this.data[category]) this.data[category] = {};
+    if (!Array.isArray(this.data[category][key])) {
+      this.data[category][key] = [];
+    }
+    this.data[category][key].push(value);
+    this.save();
+  }
+
+  static getAll(category: string) {
+    return this.data[category] || {};
+  }
+}
+
+// ============================================
+// ARQUIVO: src/index.ts
+// ============================================
+import { Client, GatewayIntentBits, Collection } from "discord.js";
+import { Logger } from "./utils/logger";
+import { Database } from "./utils/database";
+import { loadCommands } from "./handlers/commandHandler";
+import { loadEvents } from "./handlers/eventHandler";
+import config from "./config/config";
+
+export interface Command {
+  name: string;
+  description: string;
+  options?: any[];
+  adminOnly?: boolean;
+  perms?: string[];
+  run: (client: Client, interaction: any) => Promise<void>;
+}
+
+declare module "discord.js" {
+  export interface Client {
+    commands: Collection<string, Command>;
+  }
+}
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates
+  ]
+});
+
+client.commands = new Collection();
+
+async function start() {
+  try {
+    Logger.info("Iniciando bot...");
+    
+    Database.load();
+    Logger.info("Database carregado");
+
+    await loadCommands(client);
+    Logger.info(`${client.commands.size} comandos carregados`);
+
+    await loadEvents(client);
+    Logger.info("Eventos carregados");
+
+    await client.login(config.token);
+  } catch (error) {
+    Logger.error("Erro ao iniciar bot", error);
+    process.exit(1);
+  }
+}
+
+start();
+
+// ============================================
+// ARQUIVO: src/handlers/commandHandler.ts
+// ============================================
+import { Client, REST, Routes } from "discord.js";
+import { Logger } from "../utils/logger";
+import config from "../config/config";
+import fs from "fs";
+import path from "path";
+import { Command } from "../index";
+
+export async function loadCommands(client: Client) {
+  const commandsPath = path.join(__dirname, "../commands");
+  const commandFolders = fs.readdirSync(commandsPath);
+
+  const commandsData = [];
+
+  for (const folder of commandFolders) {
+    const folderPath = path.join(commandsPath, folder);
+    if (!fs.statSync(folderPath).isDirectory()) continue;
+
+    const commandFiles = fs.readdirSync(folderPath).filter(f => f.endsWith(".ts") || f.endsWith(".js"));
+
+    for (const file of commandFiles) {
+      const filePath = path.join(folderPath, file);
+      const { command } = require(filePath) as { command: Command };
+
+      if (command?.name) {
+        client.commands.set(command.name, command);
+        commandsData.push({
+          name: command.name,
+          description: command.description,
+          options: command.options || [],
+          default_member_permissions: command.adminOnly ? "0" : undefined
+        });
+        Logger.debug(`Comando carregado: ${command.name} (${folder})`);
+      }
+    }
+  }
+
+  // Registrar comandos no Discord
+  const rest = new REST({ version: "10" }).setToken(config.token);
+
+  try {
+    Logger.info("Registrando comandos slash...");
+
+    if (config.guildId) {
+      await rest.put(
+        Routes.applicationGuildCommands(config.clientId, config.guildId),
+        { body: commandsData }
+      );
+      Logger.info(`${commandsData.length} comandos registrados (Guild)`);
+    } else {
+      await rest.put(
+        Routes.applicationCommands(config.clientId),
+        { body: commandsData }
+      );
+      Logger.info(`${commandsData.length} comandos registrados (Global)`);
+    }
+  } catch (error) {
+    Logger.error("Erro ao registrar comandos", error);
+  }
+}
+
+// ============================================
+// ARQUIVO: src/handlers/eventHandler.ts
+// ============================================
+import { Client } from "discord.js";
+import { Logger } from "../utils/logger";
+import fs from "fs";
+import path from "path";
+
+export async function loadEvents(client: Client) {
+  const eventsPath = path.join(__dirname, "../events");
+  const eventFiles = fs.readdirSync(eventsPath).filter(f => f.endsWith(".ts") || f.endsWith(".js"));
+
+  for (const file of eventFiles) {
+    const filePath = path.join(eventsPath, file);
+    const event = require(filePath);
+
+    if (event.once) {
+      client.once(event.name, (...args) => event.execute(...args));
+    } else {
+      client.on(event.name, (...args) => event.execute(...args));
+    }
+
+    Logger.debug(`Evento carregado: ${event.name}`);
+  }
+}
+
+// ============================================
+// ARQUIVO: src/events/ready.ts
+// ============================================
+import { Client } from "discord.js";
+import { Logger } from "../utils/logger";
+
+module.exports = {
+  name: "ready",
+  once: true,
+  execute(client: Client) {
+    Logger.info(`Bot online como ${client.user?.tag}`);
+    Logger.info(`Servidores: ${client.guilds.cache.size}`);
+    
+    client.user?.setActivity("Use /ajuda", { type: 0 });
+  }
+};
+
+// ============================================
+// ARQUIVO: src/events/interactionCreate.ts
+// ============================================
+import { Client, ChatInputCommandInteraction, PermissionFlagsBits } from "discord.js";
+import { Logger } from "../utils/logger";
+
+module.exports = {
+  name: "interactionCreate",
+  async execute(interaction: ChatInputCommandInteraction) {
+    if (!interaction.isChatInputCommand()) return;
+
+    const client = interaction.client as Client;
+    const command = client.commands.get(interaction.commandName);
+
+    if (!command) return;
+
+    try {
+      // Verificar permissões
+      if (command.adminOnly && !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({
+          content: "❌ Este comando é apenas para administradores!",
+          ephemeral: true
+        });
+      }
+
+      if (command.perms && command.perms.length > 0) {
+        const hasPerms = command.perms.every(perm => 
+          interaction.memberPermissions?.has(perm as any)
+        );
+
+        if (!hasPerms) {
+          return interaction.reply({
+            content: "❌ Você não tem permissões suficientes para usar este comando!",
+            ephemeral: true
+          });
+        }
+      }
+
+      await command.run(client, interaction);
+      Logger.info(`Comando executado: ${command.name} por ${interaction.user.tag}`);
+    } catch (error) {
+      Logger.error(`Erro ao executar comando ${command.name}`, error);
+      
+      const errorMessage = { 
+        content: "❌ Ocorreu um erro ao executar este comando!", 
+        ephemeral: true 
+      };
+
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp(errorMessage);
+      } else {
+        await interaction.reply(errorMessage);
+      }
+    }
+  }
+};
+
+// ============================================
+// COMANDOS - CATEGORIA: ADMIN
+// ============================================
+
+// ARQUIVO: src/commands/admin/setup.ts
+import { Client, ChatInputCommandInteraction, ChannelType, PermissionFlagsBits } from "discord.js";
+import { Database } from "../../utils/database";
+
+export const command = {
+  name: "setup",
+  description: "Configura o servidor com canais e cargos necessários",
+  adminOnly: true,
+  async run(client: Client, interaction: ChatInputCommandInteraction) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const guild = interaction.guild!;
+    const created: string[] = [];
+
+    // Criar cargos
+    const roles = ["Moderador", "Muted", "VIP", "Membro"];
+    for (const roleName of roles) {
+      if (!guild.roles.cache.find(r => r.name === roleName)) {
+        await guild.roles.create({ name: roleName, reason: "Setup automático" });
+        created.push(`✅ Cargo: ${roleName}`);
+      }
+    }
+
+    // Criar categorias e canais
+    const structure = {
+      "📢 INFORMAÇÕES": ["avisos", "regras", "logs"],
+      "💬 GERAL": ["chat-geral", "memes", "bot-commands"],
+      "🎫 SUPORTE": ["tickets"]
+    };
+
+    for (const [categoryName, channels] of Object.entries(structure)) {
+      let category = guild.channels.cache.find(
+        c => c.name === categoryName && c.type === ChannelType.GuildCategory
+      );
+
+      if (!category) {
+        category = await guild.channels.create({
+          name: categoryName,
+          type: ChannelType.GuildCategory
+        });
+        created.push(`✅ Categoria: ${categoryName}`);
+      }
+
+      for (const channelName of channels) {
+        if (!guild.channels.cache.find(c => c.name === channelName)) {
+          await guild.channels.create({
+            name: channelName,
+            type: ChannelType.GuildText,
+            parent: category.id
+          });
+          created.push(`✅ Canal: #${channelName}`);
+        }
+      }
+    }
+
+    Database.set("guilds", guild.id, {
+      setupComplete: true,
+      setupDate: new Date().toISOString()
+    });
+
+    await interaction.editReply({
+      content: `✅ **Setup Completo!**\n\n${created.join("\n") || "Todos os canais e cargos já existiam."}`
+    });
+  }
+};
+
+// ARQUIVO: src/commands/admin/mensagem.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+
+export const command = {
+  name: "mensagem",
+  description: "Envia uma mensagem personalizada no canal atual",
+  adminOnly: true,
+  options: [
+    {
+      name: "texto",
+      description: "Texto da mensagem",
+      type: 3,
+      required: true
+    },
+    {
+      name: "embed",
+      description: "Enviar como embed?",
+      type: 5,
+      required: false
+    }
+  ],
+  async run(client: Client, interaction: ChatInputCommandInteraction) {
+    const texto = interaction.options.getString("texto", true);
+    const useEmbed = interaction.options.getBoolean("embed") || false;
+
+    if (useEmbed) {
+      const embed = new EmbedBuilder()
+        .setDescription(texto)
+        .setColor(0x5865F2)
+        .setTimestamp();
+
+      await interaction.channel?.send({ embeds: [embed] });
+    } else {
+      await interaction.channel?.send({ content: texto });
+    }
+
+    await interaction.reply({
+      content: "✅ Mensagem enviada!",
+      ephemeral: true
+    });
+  }
+};
+
+// ARQUIVO: src/commands/admin/limpar.ts
+import { Client, ChatInputCommandInteraction, TextChannel } from "discord.js";
+
+export const command = {
+  name: "limpar",
+  description: "Remove mensagens do canal",
+  adminOnly: true,
+  options: [
+    {
+      name: "quantidade",
+      description: "Quantidade de mensagens (1-100)",
+      type: 4,
+      required: true
+    }
+  ],
+  async run(client: Client, interaction: ChatInputCommandInteraction) {
+    const quantidade = interaction.options.getInteger("quantidade", true);
+
+    if (quantidade < 1 || quantidade > 100) {
+      return interaction.reply({
+        content: "❌ Quantidade deve ser entre 1 e 100!",
+        ephemeral: true
+      });
+    }
+
+    const channel = interaction.channel as TextChannel;
+    await channel.bulkDelete(quantidade, true);
+
+    await interaction.reply({
+      content: `✅ ${quantidade} mensagens deletadas!`,
+      ephemeral: true
+    });
+  }
+};
+
+// ARQUIVO: src/commands/admin/anuncio.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder, TextChannel } from "discord.js";
+
+export const command = {
+  name: "anuncio",
+  description: "Faz um anúncio oficial no canal de avisos",
+  adminOnly: true,
+  options: [
+    {
+      name: "titulo",
+      description: "Título do anúncio",
+      type: 3,
+      required: true
+    },
+    {
+      name: "descricao",
+      description: "Descrição do anúncio",
+      type: 3,
+      required: true
+    }
+  ],
+  async run(client: Client, interaction: ChatInputCommandInteraction) {
+    const titulo = interaction.options.getString("titulo", true);
+    const descricao = interaction.options.getString("descricao", true);
+
+    const avisosChannel = interaction.guild?.channels.cache.find(
+      c => c.name === "avisos"
+    ) as TextChannel;
+
+    if (!avisosChannel) {
+      return interaction.reply({
+        content: "❌ Canal #avisos não encontrado! Use /setup primeiro.",
+        ephemeral: true
+      });
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(`📢 ${titulo}`)
+      .setDescription(descricao)
+      .setColor(0xFF5733)
+      .setFooter({ text: `Anunciado por ${interaction.user.tag}` })
+      .setTimestamp();
+
+    await avisosChannel.send({ embeds: [embed] });
+
+    await interaction.reply({
+      content: "✅ Anúncio publicado com sucesso!",
+      ephemeral: true
+    });
+  }
+};
+
+// ARQUIVO: src/commands/admin/cargo.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+
+export const command = {
+  name: "cargo",
+  description: "Gerencia cargos de um usuário",
+  adminOnly: true,
+  options: [
+    {
+      name: "acao",
+      description: "Adicionar ou remover",
+      type: 3,
+      required: true,
+      choices: [
+        { name: "Adicionar", value: "add" },
+        { name: "Remover", value: "remove" }
+      ]
+    },
+    {
+      name: "usuario",
+      description: "Usuário alvo",
+      type: 6,
+      required: true
+    },
+    {
+      name: "cargo",
+      description: "Cargo",
+      type: 8,
+      required: true
+    }
+  ],
+  async run(client: Client, interaction: ChatInputCommandInteraction) {
+    const acao = interaction.options.getString("acao", true);
+    const usuario = interaction.options.getUser("usuario", true);
+    const cargo = interaction.options.getRole("cargo", true);
+
+    const member = await interaction.guild?.members.fetch(usuario.id);
+    if (!member) {
+      return interaction.reply({
+        content: "❌ Usuário não encontrado!",
+        ephemeral: true
+      });
+    }
+
+    if (acao === "add") {
+      await member.roles.add(cargo.id);
+      await interaction.reply({
+        content: `✅ Cargo ${cargo.name} adicionado a ${usuario.tag}!`,
+        ephemeral: true
+      });
+    } else {
+      await member.roles.remove(cargo.id);
+      await interaction.reply({
+        content: `✅ Cargo ${cargo.name} removido de ${usuario.tag}!`,
+        ephemeral: true
+      });
+    }
+  }
+};
+
+// ============================================
+// COMANDOS - CATEGORIA: MOD
+// ============================================
+
+// ARQUIVO: src/commands/mod/ban.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+import { Database } from "../../utils/database";
+
+export const command = {
+  name: "ban",
+  description: "Bane um usuário do servidor",
+  perms: ["BanMembers"],
+  options: [
+    {
+      name: "usuario",
+      description: "Usuário a ser banido",
+      type: 6,
+      required: true
+    },
+    {
+      name: "motivo",
+      description: "Motivo do ban",
+      type: 3,
+      required: false
+    },
+    {
+      name: "dias",
+      description: "Dias de mensagens para deletar (0-7)",
+      type: 4,
+      required: false
+    }
+  ],
+  async run(client: Client, interaction: ChatInputCommandInteraction) {
+    const usuario = interaction.options.getUser("usuario", true);
+    const motivo = interaction.options.getString("motivo") || "Sem motivo";
+    const dias = interaction.options.getInteger("dias") || 0;
+
+    const member = await interaction.guild?.members.fetch(usuario.id);
+    if (!member) {
+      return interaction.reply({
+        content: "❌ Usuário não encontrado!",
+        ephemeral: true
+      });
+    }
+
+    try {
+      await member.send(`Você foi banido de ${interaction.guild?.name}\nMotivo: ${motivo}`);
+    } catch {}
+
+    await member.ban({ deleteMessageSeconds: dias * 24 * 60 * 60, reason: motivo });
+
+    Database.push("infractions", usuario.id, {
+      type: "ban",
+      reason: motivo,
+      moderator: interaction.user.tag,
+      date: new Date().toISOString()
+    });
+
+    await interaction.reply({
+      content: `✅ ${usuario.tag} foi banido!\nMotivo: ${motivo}`,
+      ephemeral: true
+    });
+  }
+};
+
+// ARQUIVO: src/commands/mod/kick.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+import { Database } from "../../utils/database";
+
+export const command = {
+  name: "kick",
+  description: "Expulsa um usuário do servidor",
+  perms: ["KickMembers"],
+  options: [
+    {
+      name: "usuario",
+      description: "Usuário a ser expulso",
+      type: 6,
+      required: true
+    },
+    {
+      name: "motivo",
+      description: "Motivo da expulsão",
+      type: 3,
+      required: false
+    }
+  ],
+  async run(client: Client, interaction: ChatInputCommandInteraction) {
+    const usuario = interaction.options.getUser("usuario", true);
+    const motivo = interaction.options.getString("motivo") || "Sem motivo";
+
+    const member = await interaction.guild?.members.fetch(usuario.id);
+    if (!member) {
+      return interaction.reply({
+        content: "❌ Usuário não encontrado!",
+        ephemeral: true
+      });
+    }
+
+    try {
+      await member.send(`Você foi expulso de ${interaction.guild?.name}\nMotivo: ${motivo}`);
+    } catch {}
+
+    await member.kick(motivo);
+
+    Database.push("infractions", usuario.id, {
+      type: "kick",
+      reason: motivo,
+      moderator: interaction.user.tag,
+      date: new Date().toISOString()
+    });
+
+    await interaction.reply({
+      content: `✅ ${usuario.tag} foi expulso!\nMotivo: ${motivo}`,
+      ephemeral: true
+    });
+  }
+};
+
+// ARQUIVO: src/commands/mod/warn.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+import { Database } from "../../utils/database";
+
+export const command = {
+  name: "warn",
+  description: "Adverte um usuário",
+  perms: ["ModerateMembers"],
+  options: [
+    {
+      name: "usuario",
+      description: "Usuário a ser advertido",
+      type: 6,
+      required: true
+    },
+    {
+      name: "motivo",
+      description: "Motivo da advertência",
+      type: 3,
+      required: true
+    }
+  ],
+  async run(client: Client, interaction: ChatInputCommandInteraction) {
+    const usuario = interaction.options.getUser("usuario", true);
+    const motivo = interaction.options.getString("motivo", true);
+
+    Database.push("infractions", usuario.id, {
+      type: "warn",
+      reason: motivo,
+      moderator: interaction.user.tag,
+      date: new Date().toISOString()
+    });
+
+    try {
+      await usuario.send(`Você recebeu uma advertência em ${interaction.guild?.name}\nMotivo: ${motivo}`);
+    } catch {}
+
+    await interaction.reply({
+      content: `✅ ${usuario.tag} foi advertido!\nMotivo: ${motivo}`,
+      ephemeral: true
+    });
+  }
+};
+
+// ARQUIVO: src/commands/mod/mute.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+import { Database } from "../../utils/database";
+
+export const command = {
+  name: "mute",
+  description: "Silencia um usuário",
+  perms: ["ModerateMembers"],
+  options: [
+    {
+      name: "usuario",
+      description: "Usuário a ser silenciado",
+      type: 6,
+      required: true
+    },
+    {
+      name: "duracao",
+      description: "Duração em minutos",
+      type: 4,
+      required: true
+    },
+    {
+      name: "motivo",
+      description: "Motivo do silenciamento",
+      type: 3,
+      required: false
+    }
+  ],
+  async run(client: Client, interaction: ChatInputCommandInteraction) {
+    const usuario = interaction.options.getUser("usuario", true);
+    const duracao = interaction.options.getInteger("duracao", true);
+    const motivo = interaction.options.getString("motivo") || "Sem motivo";
+
+    const member = await interaction.guild?.members.fetch(usuario.id);
+    if (!member) {
+      return interaction.reply({
+        content: "❌ Usuário não encontrado!",
+        ephemeral: true
+      });
+    }
+
+    const timeout = duracao * 60 * 1000;
+    await member.timeout(timeout, motivo);
+
+    Database.push("infractions", usuario.id, {
+      type: "mute",
+      reason: motivo,
+      duration: duracao,
+      moderator: interaction.user.tag,
+      date: new Date().toISOString()
+    });
+
+    await interaction.reply({
+      content: `✅ ${usuario.tag} foi silenciado por ${duracao} minutos!\nMotivo: ${motivo}`,
+      ephemeral: true
+    });
+  }
+};
+
+// ARQUIVO: src/commands/mod/unmute.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+
+export const command = {
+  name: "unmute",
+  description: "Remove o silenciamento de um usuário",
+  perms: ["ModerateMembers"],
+  options: [
+    {
+      name: "usuario",
+      description: "Usuário",
+      type: 6,
+      required: true
+    }
+  ],
+  async run(client: Client, interaction: ChatInputCommandInteraction) {
+    const usuario = interaction.options.getUser("usuario", true);
+
+    const member = await interaction.guild?.members.fetch(usuario.id);
+    if (!member) {
+      return interaction.reply({
+        content: "❌ Usuário não encontrado!",
+        ephemeral: true
+      });
+    }
+
+    await member.timeout(null);
+
+    await interaction.reply({
+      content: `✅ ${usuario.tag} foi desmutado!`,
+      ephemeral: true
+    });
+  }
+};
+
+// ARQUIVO: src/commands/mod/infractions.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+import { Database } from "../../utils/database";
+
+export const command = {
+  name: "infractions",
+  description: "Mostra as infrações de um usuário",
+  perms: ["ModerateMembers"],
+  options: [
+    {
+      name: "usuario",
+      description: "Usuário",
+      type: 6,
+      required: true
+    }
+  ],
+  async run(client: Client, interaction: ChatInputCommandInteraction) {
+    const usuario = interaction.options.getUser("usuario", true);
+    const infractions = Database.get("infractions", usuario.id) || [];
+
+    if (infractions.length === 0) {
+      return interaction.reply({
+        content: `✅ ${usuario.tag} não possui infrações!`,
+        ephemeral: true
+      });
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(`📋 Infrações de ${usuario.tag}`)
+      .setColor(0xFF5733)
+      .setDescription(
+        infractions.map((inf: any, i: number) => 
+          `**${i + 1}.** ${inf.type.toUpperCase()} - ${inf.reason}\nModerador: ${inf.moderator} | Data: ${new Date(inf.date).toLocaleDateString()}`
+        ).join("\n\n")
+      )
+      .setFooter({ text: `Total: ${infractions.length} infrações` });
+
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+  }
+};
+
+// ARQUIVO: src/commands/mod/slowmode.ts
+import { Client, ChatInputCommandInteraction, TextChannel } from "discord.js";
+
+export const command = {
+  name: "slowmode",
+  description
+  <function_calls>
+<invoke name="artifacts">
+<parameter name="command">update</parameter>
+<parameter name="id">discord-bot-complete</parameter>
+<parameter name="old_str">// ARQUIVO: src/commands/mod/slowmode.ts
+import { Client, ChatInputCommandInteraction, TextChannel } from "discord.js";
+export const command = {
+name: "slowmode",
+description</parameter>
+<parameter name="new_str">// ARQUIVO: src/commands/mod/slowmode.ts
+import { Client, ChatInputCommandInteraction, TextChannel } from "discord.js";
+export const command = {
+name: "slowmode",
+description: "Define o modo lento do canal",
+perms: ["ManageChannels"],
+options: [
+{
+name: "segundos",
+description: "Tempo de espera entre mensagens (0-21600)",
+type: 4,
+required: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const segundos = interaction.options.getInteger("segundos", true);
+if (segundos < 0 || segundos > 21600) {
+  return interaction.reply({
+    content: "❌ O tempo deve ser entre 0 e 21600 segundos!",
+    ephemeral: true
+  });
+}
+
+const channel = interaction.channel as TextChannel;
+await channel.setRateLimitPerUser(segundos);
+
+await interaction.reply({
+  content: `✅ Slowmode definido para ${segundos} segundos!`,
+  ephemeral: true
+});
+}
+};
+// ARQUIVO: src/commands/mod/lock.ts
+import { Client, ChatInputCommandInteraction, TextChannel } from "discord.js";
+export const command = {
+name: "lock",
+description: "Bloqueia o canal para membros normais",
+perms: ["ManageChannels"],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const channel = interaction.channel as TextChannel;
+await channel.permissionOverwrites.edit(interaction.guild!.roles.everyone, {
+  SendMessages: false
+});
+
+await interaction.reply({
+  content: "🔒 Canal bloqueado!",
+  ephemeral: true
+});
+}
+};
+// ARQUIVO: src/commands/mod/unlock.ts
+import { Client, ChatInputCommandInteraction, TextChannel } from "discord.js";
+export const command = {
+name: "unlock",
+description: "Desbloqueia o canal",
+perms: ["ManageChannels"],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const channel = interaction.channel as TextChannel;
+await channel.permissionOverwrites.edit(interaction.guild!.roles.everyone, {
+  SendMessages: true
+});
+
+await interaction.reply({
+  content: "🔓 Canal desbloqueado!",
+  ephemeral: true
+});
+}
+};
+// ============================================
+// COMANDOS - CATEGORIA: UTILS
+// ============================================
+// ARQUIVO: src/commands/utils/ping.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+export const command = {
+name: "ping",
+description: "Mostra a latência do bot",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const ping = client.ws.ping;
+await interaction.reply({
+content: 🏓 Pong! Latência: ${ping}ms,
+ephemeral: true
+});
+}
+};
+// ARQUIVO: src/commands/utils/userinfo.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "userinfo",
+description: "Mostra informações de um usuário",
+options: [
+{
+name: "usuario",
+description: "Usuário (deixe vazio para você mesmo)",
+type: 6,
+required: false
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const usuario = interaction.options.getUser("usuario") || interaction.user;
+const member = await interaction.guild?.members.fetch(usuario.id);
+const embed = new EmbedBuilder()
+  .setTitle(`👤 Informações de ${usuario.tag}`)
+  .setThumbnail(usuario.displayAvatarURL())
+  .setColor(0x5865F2)
+  .addFields(
+    { name: "ID", value: usuario.id, inline: true },
+    { name: "Tag", value: usuario.tag, inline: true },
+    { name: "Bot", value: usuario.bot ? "Sim" : "Não", inline: true },
+    { name: "Conta criada", value: `<t:${Math.floor(usuario.createdTimestamp / 1000)}:R>`, inline: true },
+    { name: "Entrou no servidor", value: member ? `<t:${Math.floor(member.joinedTimestamp! / 1000)}:R>` : "N/A", inline: true },
+    { name: "Cargos", value: member?.roles.cache.filter(r => r.id !== interaction.guild?.id).map(r => r.name).join(", ") || "Nenhum", inline: false }
+  );
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/utils/serverinfo.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "serverinfo",
+description: "Mostra informações do servidor",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const guild = interaction.guild!;
+const embed = new EmbedBuilder()
+  .setTitle(`🏰 ${guild.name}`)
+  .setThumbnail(guild.iconURL() || "")
+  .setColor(0x5865F2)
+  .addFields(
+    { name: "ID", value: guild.id, inline: true },
+    { name: "Dono", value: `<@${guild.ownerId}>`, inline: true },
+    { name: "Criado em", value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:R>`, inline: true },
+    { name: "Membros", value: guild.memberCount.toString(), inline: true },
+    { name: "Canais", value: guild.channels.cache.size.toString(), inline: true },
+    { name: "Cargos", value: guild.roles.cache.size.toString(), inline: true },
+    { name: "Emojis", value: guild.emojis.cache.size.toString(), inline: true },
+    { name: "Boost Level", value: guild.premiumTier.toString(), inline: true },
+    { name: "Boosts", value: guild.premiumSubscriptionCount?.toString() || "0", inline: true }
+  );
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/utils/avatar.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "avatar",
+description: "Mostra o avatar de um usuário",
+options: [
+{
+name: "usuario",
+description: "Usuário",
+type: 6,
+required: false
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const usuario = interaction.options.getUser("usuario") || interaction.user;
+const embed = new EmbedBuilder()
+  .setTitle(`Avatar de ${usuario.tag}`)
+  .setImage(usuario.displayAvatarURL({ size: 1024 }))
+  .setColor(0x5865F2);
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/utils/ajuda.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "ajuda",
+description: "Lista todos os comandos disponíveis",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const embed = new EmbedBuilder()
+.setTitle("📚 Lista de Comandos")
+.setColor(0x5865F2)
+.setDescription("Use /comando para executar")
+.addFields(
+{
+name: "👑 Admin",
+value: "setup, mensagem, limpar, anuncio, cargo",
+inline: false
+},
+{
+name: "🛡️ Moderação",
+value: "ban, kick, warn, mute, unmute, infractions, slowmode, lock, unlock",
+inline: false
+},
+{
+name: "🔧 Utilidades",
+value: "ping, userinfo, serverinfo, avatar, ajuda, enquete, lembrete",
+inline: false
+},
+{
+name: "🏛️ Política",
+value: "ideologia, avaliar-politico, politicometro, debater, manifesto",
+inline: false
+},
+{
+name: "💰 Economia",
+value: "economia, trabalhar, daily, investir, ranking, transferir, loja",
+inline: false
+},
+{
+name: "😂 Memes",
+value: "meme, piada, 8ball, emoji, dado",
+inline: false
+},
+{
+name: "⚙️ Sistema",
+value: "ticket, logs, backup, status",
+inline: false
+}
+)
+.setFooter({ text: "Bot desenvolvido para Movimento Jovens de Direita" });
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/utils/enquete.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "enquete",
+description: "Cria uma enquete",
+options: [
+{
+name: "pergunta",
+description: "Pergunta da enquete",
+type: 3,
+required: true
+},
+{
+name: "opcao1",
+description: "Primeira opção",
+type: 3,
+required: true
+},
+{
+name: "opcao2",
+description: "Segunda opção",
+type: 3,
+required: true
+},
+{
+name: "opcao3",
+description: "Terceira opção",
+type: 3,
+required: false
+},
+{
+name: "opcao4",
+description: "Quarta opção",
+type: 3,
+required: false
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const pergunta = interaction.options.getString("pergunta", true);
+const opcoes = [
+interaction.options.getString("opcao1", true),
+interaction.options.getString("opcao2", true),
+interaction.options.getString("opcao3"),
+interaction.options.getString("opcao4")
+].filter(Boolean) as string[];
+const emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"];
+const description = opcoes.map((op, i) => `${emojis[i]} ${op}`).join("\n");
+
+const embed = new EmbedBuilder()
+  .setTitle(`📊 ${pergunta}`)
+  .setDescription(description)
+  .setColor(0x5865F2)
+  .setFooter({ text: `Enquete criada por ${interaction.user.tag}` })
+  .setTimestamp();
+
+const message = await interaction.reply({ embeds: [embed], fetchReply: true });
+
+for (let i = 0; i < opcoes.length; i++) {
+  await message.react(emojis[i]);
+}
+}
+};
+// ARQUIVO: src/commands/utils/lembrete.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+export const command = {
+name: "lembrete",
+description: "Define um lembrete",
+options: [
+{
+name: "tempo",
+description: "Tempo em minutos",
+type: 4,
+required: true
+},
+{
+name: "mensagem",
+description: "Mensagem do lembrete",
+type: 3,
+required: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const tempo = interaction.options.getInteger("tempo", true);
+const mensagem = interaction.options.getString("mensagem", true);
+await interaction.reply({
+  content: `⏰ Lembrete definido para daqui a ${tempo} minutos!`,
+  ephemeral: true
+});
+
+setTimeout(async () => {
+  try {
+    await interaction.user.send(`⏰ **Lembrete:** ${mensagem}`);
+  } catch {
+    await interaction.followUp({
+      content: `⏰ **Lembrete:** ${mensagem}`,
+      ephemeral: true
+    });
+  }
+}, tempo * 60 * 1000);
+}
+};
+// ============================================
+// COMANDOS - CATEGORIA: POLÍTICA
+// ============================================
+// ARQUIVO: src/commands/politica/ideologia.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "ideologia",
+description: "Define ou visualiza sua ideologia política",
+options: [
+{
+name: "acao",
+description: "Ação",
+type: 3,
+required: true,
+choices: [
+{ name: "Definir", value: "set" },
+{ name: "Ver", value: "view" },
+{ name: "Remover", value: "remove" }
+]
+},
+{
+name: "ideologia",
+description: "Sua ideologia",
+type: 3,
+required: false,
+choices: [
+{ name: "Conservador", value: "conservador" },
+{ name: "Liberal", value: "liberal" },
+{ name: "Libertário", value: "libertario" },
+{ name: "Nacionalista", value: "nacionalista" },
+{ name: "Social-Democrata", value: "socialdemocrata" },
+{ name: "Outro", value: "outro" }
+]
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const acao = interaction.options.getString("acao", true);
+const userId = interaction.user.id;
+if (acao === "set") {
+  const ideologia = interaction.options.getString("ideologia", true);
+  Database.set("politics", userId, { ideologia });
+
+  await interaction.reply({
+    content: `✅ Sua ideologia foi definida como **${ideologia}**!`,
+    ephemeral: true
+  });
+} else if (acao === "view") {
+  const data = Database.get("politics", userId);
+
+  if (!data?.ideologia) {
+    return interaction.reply({
+      content: "❌ Você ainda não definiu sua ideologia! Use `/ideologia acao:Definir`",
+      ephemeral: true
+    });
+  }
+
+  await interaction.reply({
+    content: `🏛️ Sua ideologia: **${data.ideologia}**`,
+    ephemeral: true
+  });
+} else {
+  Database.set("politics", userId, {});
+  await interaction.reply({
+    content: "✅ Sua ideologia foi removida!",
+    ephemeral: true
+  });
+}
+}
+};
+// ARQUIVO: src/commands/politica/avaliar-politico.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "avaliar-politico",
+description: "Avalia um político",
+options: [
+{
+name: "nome",
+description: "Nome do político",
+type: 3,
+required: true
+},
+{
+name: "nota",
+description: "Nota de 0 a 10",
+type: 4,
+required: true
+},
+{
+name: "comentario",
+description: "Comentário sobre o político",
+type: 3,
+required: false
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const nome = interaction.options.getString("nome", true);
+const nota = interaction.options.getInteger("nota", true);
+const comentario = interaction.options.getString("comentario") || "Sem comentário";
+if (nota < 0 || nota > 10) {
+  return interaction.reply({
+    content: "❌ A nota deve ser entre 0 e 10!",
+    ephemeral: true
+  });
+}
+
+const embed = new EmbedBuilder()
+  .setTitle(`⭐ Avaliação: ${nome}`)
+  .setColor(nota >= 7 ? 0x00FF00 : nota >= 4 ? 0xFFFF00 : 0xFF0000)
+  .addFields(
+    { name: "Nota", value: `${nota}/10`, inline: true },
+    { name: "Avaliado por", value: interaction.user.tag, inline: true },
+    { name: "Comentário", value: comentario, inline: false }
+  )
+  .setTimestamp();
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/politica/politicometro.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+export const command = {
+name: "politicometro",
+description: "Mede o quão político você é",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const porcentagem = Math.floor(Math.random() * 101);
+let emoji = "🤔";
+let mensagem = "";
+
+if (porcentagem >= 80) {
+  emoji = "🏛️";
+  mensagem = "Você vive e respira política!";
+} else if (porcentagem >= 50) {
+  emoji = "📰";
+  mensagem = "Você é bem engajado politicamente!";
+} else if (porcentagem >= 20) {
+  emoji = "😐";
+  mensagem = "Você tem algum interesse político.";
+} else {
+  emoji = "😴";
+  mensagem = "Política não é muito sua praia.";
+}
+
+await interaction.reply({
+  content: `${emoji} **Politicômetro**\n${interaction.user.tag} é **${porcentagem}%** político!\n${mensagem}`
+});
+}
+};
+// ARQUIVO: src/commands/politica/debater.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "debater",
+description: "Inicia um debate político",
+options: [
+{
+name: "topico",
+description: "Tópico do debate",
+type: 3,
+required: true
+},
+{
+name: "posicao",
+description: "Sua posição",
+type: 3,
+required: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const topico = interaction.options.getString("topico", true);
+const posicao = interaction.options.getString("posicao", true);
+const embed = new EmbedBuilder()
+  .setTitle(`💬 Debate: ${topico}`)
+  .setDescription(`**Posição inicial de ${interaction.user.tag}:**\n${posicao}`)
+  .setColor(0x5865F2)
+  .setFooter({ text: "Participe nos comentários!" })
+  .setTimestamp();
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/politica/manifesto.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "manifesto",
+description: "Cria um manifesto político",
+options: [
+{
+name: "titulo",
+description: "Título do manifesto",
+type: 3,
+required: true
+},
+{
+name: "conteudo",
+description: "Conteúdo do manifesto",
+type: 3,
+required: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const titulo = interaction.options.getString("titulo", true);
+const conteudo = interaction.options.getString("conteudo", true);
+const embed = new EmbedBuilder()
+  .setTitle(`📜 ${titulo}`)
+  .setDescription(conteudo)
+  .setColor(0xFF5733)
+  .setFooter({ text: `Manifesto de ${interaction.user.tag}` })
+  .setTimestamp();
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ============================================
+// COMANDOS - CATEGORIA: ECONOMIA
+// ============================================
+// ARQUIVO: src/commands/economia/economia.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "economia",
+description: "Mostra seu saldo",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const userId = interaction.user.id;
+const data = Database.get("economy", userId) || { balance: 0, bank: 0 };
+const embed = new EmbedBuilder()
+  .setTitle(`💰 Economia de ${interaction.user.tag}`)
+  .setColor(0xFFD700)
+  .addFields(
+    { name: "💵 Carteira", value: `R$ ${data.balance || 0}`, inline: true },
+    { name: "🏦 Banco", value: `R$ ${data.bank || 0}`, inline: true },
+    { name: "💎 Total", value: `R$ ${(data.balance || 0) + (data.bank || 0)}`, inline: true }
+  );
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/economia/trabalhar.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "trabalhar",
+description: "Trabalhe e ganhe dinheiro",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const userId = interaction.user.id;
+const data = Database.get("economy", userId) || { balance: 0, bank: 0, lastWork: 0 };
+const now = Date.now();
+const cooldown = 60 * 60 * 1000; // 1 hora
+
+if (data.lastWork && (now - data.lastWork) < cooldown) {
+  const timeLeft = Math.ceil((cooldown - (now - data.lastWork)) / 1000 / 60);
+  return interaction.reply({
+    content: `⏰ Você já trabalhou recentemente! Aguarde ${timeLeft} minutos.`,
+    ephemeral: true
+  });
+}
+
+const ganho = Math.floor(Math.random() * 500) + 100;
+data.balance = (data.balance || 0) + ganho;
+data.lastWork = now;
+
+Database.set("economy", userId, data);
+
+const jobs = [
+  "entregou pizza", "consertou computadores", "deu aula particular",
+  "fez freela de design", "programou um site", "vendeu produtos online"
+];
+
+const job = jobs[Math.floor(Math.random() * jobs.length)];
+
+await interaction.reply({
+  content: `💼 Você ${job} e ganhou **R$ ${ganho}**!`
+});
+}
+};
+// ARQUIVO: src/commands/economia/daily.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "daily",
+description: "Resgata sua recompensa diária",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const userId = interaction.user.id;
+const data = Database.get("economy", userId) || { balance: 0, bank: 0, lastDaily: 0 };
+const now = Date.now();
+const cooldown = 24 * 60 * 60 * 1000; // 24 horas
+
+if (data.lastDaily && (now - data.lastDaily) < cooldown) {
+  const timeLeft = Math.ceil((cooldown - (now - data.lastDaily)) / 1000 / 60 / 60);
+  return interaction.reply({
+    content: `⏰ Você já resgatou hoje! Volte em ${timeLeft} horas.`,
+    ephemeral: true
+  });
+}
+
+const reward = 1000;
+data.balance = (data.balance || 0) + reward;
+data.lastDaily = now;
+
+Database.set("economy", userId, data);
+
+await interaction.reply({
+  content: `🎁 Você resgatou sua recompensa diária de **R$ ${reward}**!`
+});
+}
+};
+// ARQUIVO: src/commands/economia/investir.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "investir",
+description: "Investe dinheiro (risco de perder)",
+options: [
+{
+name: "quantia",
+description: "Quanto deseja investir",
+type: 4,
+required: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const quantia = interaction.options.getInteger("quantia", true);
+const userId = interaction.user.id;
+const data = Database.get("economy", userId) || { balance: 0 };
+if (quantia < 100) {
+  return interaction.reply({
+    content: "❌ Você precisa investir no mínimo R$ 100!",
+    ephemeral: true
+  });
+}
+
+if (data.balance < quantia) {
+  return interaction.reply({
+    content: "❌ Você não tem dinheiro suficiente!",
+    ephemeral: true
+  });
+}
+
+const success = Math.random() > 0.5;
+const multiplier = success ? (Math.random() * 0.5 + 1) : -(Math.random() * 0.5);
+const resultado = Math.floor(quantia * multiplier);
+
+data.balance += resultado;
+Database.set("economy", userId, data);
+
+if (success) {
+  await interaction.reply({
+    content: `📈 **Investimento bem-sucedido!** Você ganhou **R$ ${resultado}**!`
+  });
+} else {
+  await interaction.reply({
+    content: `📉 **Investimento fracassou!** Você perdeu **R$ ${Math.abs(resultado)}**!`
+  });
+}
+}
+};
+// ARQUIVO: src/commands/economia/ranking.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "ranking",
+description: "Mostra o ranking de economia",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const allData = Database.getAll("economy");
+const sorted = Object.entries(allData)
+  .map(([userId, data]: [string, any]) => ({
+    userId,
+    total: (data.balance || 0) + (data.bank || 0)
+  }))
+  .sort((a, b) => b.total - a.total)
+  .slice(0, 10);
+
+if (sorted.length === 0) {
+  return interaction.reply({
+    content: "❌ Nenhum dado de economia encontrado!",
+    ephemeral: true
+  });
+}
+
+const description = await Promise.all(
+  sorted.map(async (entry, index) => {
+    const user = await client.users.fetch(entry.userId).catch(() => null);
+    const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : `${index + 1}.`;
+    return `${medal} **${user?.tag || "Usuário Desconhecido"}** - R$ ${entry.total}`;
+  })
+);
+
+const embed = new EmbedBuilder()
+  .setTitle("🏆 Ranking de Economia")
+  .setDescription(description.join("\n"))
+  .setColor(0xFFD700)
+  .setTimestamp();
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/economia/transferir.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "transferir",
+description: "Transfere dinheiro para outro usuário",
+options: [
+{
+name: "usuario",
+description: "Usuário que receberá",
+type: 6,
+required: true
+},
+{
+name: "quantia",
+description: "Quantia a transferir",
+type: 4,
+required: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const target = interaction.options.getUser("usuario", true);
+const quantia = interaction.options.getInteger("quantia", true);
+const senderId = interaction.user.id;
+if (target.id === senderId) {
+  return interaction.reply({
+    content: "❌ Você não pode transferir para si mesmo!",
+    ephemeral: true
+  });
+}
+
+if (quantia < 1) {
+  return interaction.reply({
+    content: "❌ A quantia deve ser maior que zero!",
+    ephemeral: true
+  });
+}
+
+const senderData = Database.get("economy", senderId) || { balance: 0 };
+
+if (senderData.balance < quantia) {
+  return interaction.reply({
+    content: "❌ Você não tem saldo suficiente!",
+    ephemeral: true
+  });
+}
+
+const receiverData = Database.get("economy", target.id) || { balance: 0, bank: 0 };
+
+senderData.balance -= quantia;
+receiverData.balance = (receiverData.balance || 0) + quantia;
+
+Database.set("economy", senderId, senderData);
+Database.set("economy", target.id, receiverData);
+
+await interaction.reply({
+  content: `✅ Você transferiu **R$ ${quantia}** para ${target.tag}!`
+});
+
+try {
+  await target
+  <function_calls>
+<invoke name="artifacts">
+<parameter name="command">update</parameter>
+<parameter name="id">discord-bot-complete</parameter>
+<parameter name="old_str">// ARQUIVO: src/commands/mod/slowmode.ts
+import { Client, ChatInputCommandInteraction, TextChannel } from "discord.js";
+export const command = {
+name: "slowmode",
+description</parameter>
+<parameter name="new_str">// ARQUIVO: src/commands/mod/slowmode.ts
+import { Client, ChatInputCommandInteraction, TextChannel } from "discord.js";
+export const command = {
+name: "slowmode",
+description: "Define o modo lento do canal",
+perms: ["ManageChannels"],
+options: [
+{
+name: "segundos",
+description: "Tempo de espera entre mensagens (0-21600)",
+type: 4,
+required: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const segundos = interaction.options.getInteger("segundos", true);
+if (segundos < 0 || segundos > 21600) {
+  return interaction.reply({
+    content: "❌ O tempo deve ser entre 0 e 21600 segundos!",
+    ephemeral: true
+  });
+}
+
+const channel = interaction.channel as TextChannel;
+await channel.setRateLimitPerUser(segundos);
+
+await interaction.reply({
+  content: `✅ Slowmode definido para ${segundos} segundos!`,
+  ephemeral: true
+});
+}
+};
+// ARQUIVO: src/commands/mod/lock.ts
+import { Client, ChatInputCommandInteraction, TextChannel } from "discord.js";
+export const command = {
+name: "lock",
+description: "Bloqueia o canal para membros normais",
+perms: ["ManageChannels"],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const channel = interaction.channel as TextChannel;
+await channel.permissionOverwrites.edit(interaction.guild!.roles.everyone, {
+  SendMessages: false
+});
+
+await interaction.reply({
+  content: "🔒 Canal bloqueado!",
+  ephemeral: true
+});
+}
+};
+// ARQUIVO: src/commands/mod/unlock.ts
+import { Client, ChatInputCommandInteraction, TextChannel } from "discord.js";
+export const command = {
+name: "unlock",
+description: "Desbloqueia o canal",
+perms: ["ManageChannels"],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const channel = interaction.channel as TextChannel;
+await channel.permissionOverwrites.edit(interaction.guild!.roles.everyone, {
+  SendMessages: true
+});
+
+await interaction.reply({
+  content: "🔓 Canal desbloqueado!",
+  ephemeral: true
+});
+}
+};
+// ============================================
+// COMANDOS - CATEGORIA: UTILS
+// ============================================
+// ARQUIVO: src/commands/utils/ping.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+export const command = {
+name: "ping",
+description: "Mostra a latência do bot",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const ping = client.ws.ping;
+await interaction.reply({
+content: 🏓 Pong! Latência: ${ping}ms,
+ephemeral: true
+});
+}
+};
+// ARQUIVO: src/commands/utils/userinfo.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "userinfo",
+description: "Mostra informações de um usuário",
+options: [
+{
+name: "usuario",
+description: "Usuário (deixe vazio para você mesmo)",
+type: 6,
+required: false
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const usuario = interaction.options.getUser("usuario") || interaction.user;
+const member = await interaction.guild?.members.fetch(usuario.id);
+const embed = new EmbedBuilder()
+  .setTitle(`👤 Informações de ${usuario.tag}`)
+  .setThumbnail(usuario.displayAvatarURL())
+  .setColor(0x5865F2)
+  .addFields(
+    { name: "ID", value: usuario.id, inline: true },
+    { name: "Tag", value: usuario.tag, inline: true },
+    { name: "Bot", value: usuario.bot ? "Sim" : "Não", inline: true },
+    { name: "Conta criada", value: `<t:${Math.floor(usuario.createdTimestamp / 1000)}:R>`, inline: true },
+    { name: "Entrou no servidor", value: member ? `<t:${Math.floor(member.joinedTimestamp! / 1000)}:R>` : "N/A", inline: true },
+    { name: "Cargos", value: member?.roles.cache.filter(r => r.id !== interaction.guild?.id).map(r => r.name).join(", ") || "Nenhum", inline: false }
+  );
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/utils/serverinfo.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "serverinfo",
+description: "Mostra informações do servidor",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const guild = interaction.guild!;
+const embed = new EmbedBuilder()
+  .setTitle(`🏰 ${guild.name}`)
+  .setThumbnail(guild.iconURL() || "")
+  .setColor(0x5865F2)
+  .addFields(
+    { name: "ID", value: guild.id, inline: true },
+    { name: "Dono", value: `<@${guild.ownerId}>`, inline: true },
+    { name: "Criado em", value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:R>`, inline: true },
+    { name: "Membros", value: guild.memberCount.toString(), inline: true },
+    { name: "Canais", value: guild.channels.cache.size.toString(), inline: true },
+    { name: "Cargos", value: guild.roles.cache.size.toString(), inline: true },
+    { name: "Emojis", value: guild.emojis.cache.size.toString(), inline: true },
+    { name: "Boost Level", value: guild.premiumTier.toString(), inline: true },
+    { name: "Boosts", value: guild.premiumSubscriptionCount?.toString() || "0", inline: true }
+  );
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/utils/avatar.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "avatar",
+description: "Mostra o avatar de um usuário",
+options: [
+{
+name: "usuario",
+description: "Usuário",
+type: 6,
+required: false
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const usuario = interaction.options.getUser("usuario") || interaction.user;
+const embed = new EmbedBuilder()
+  .setTitle(`Avatar de ${usuario.tag}`)
+  .setImage(usuario.displayAvatarURL({ size: 1024 }))
+  .setColor(0x5865F2);
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/utils/ajuda.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "ajuda",
+description: "Lista todos os comandos disponíveis",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const embed = new EmbedBuilder()
+.setTitle("📚 Lista de Comandos")
+.setColor(0x5865F2)
+.setDescription("Use /comando para executar")
+.addFields(
+{
+name: "👑 Admin",
+value: "setup, mensagem, limpar, anuncio, cargo",
+inline: false
+},
+{
+name: "🛡️ Moderação",
+value: "ban, kick, warn, mute, unmute, infractions, slowmode, lock, unlock",
+inline: false
+},
+{
+name: "🔧 Utilidades",
+value: "ping, userinfo, serverinfo, avatar, ajuda, enquete, lembrete",
+inline: false
+},
+{
+name: "🏛️ Política",
+value: "ideologia, avaliar-politico, politicometro, debater, manifesto",
+inline: false
+},
+{
+name: "💰 Economia",
+value: "economia, trabalhar, daily, investir, ranking, transferir, loja",
+inline: false
+},
+{
+name: "😂 Memes",
+value: "meme, piada, 8ball, emoji, dado",
+inline: false
+},
+{
+name: "⚙️ Sistema",
+value: "ticket, logs, backup, status",
+inline: false
+}
+)
+.setFooter({ text: "Bot desenvolvido para Movimento Jovens de Direita" });
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/utils/enquete.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "enquete",
+description: "Cria uma enquete",
+options: [
+{
+name: "pergunta",
+description: "Pergunta da enquete",
+type: 3,
+required: true
+},
+{
+name: "opcao1",
+description: "Primeira opção",
+type: 3,
+required: true
+},
+{
+name: "opcao2",
+description: "Segunda opção",
+type: 3,
+required: true
+},
+{
+name: "opcao3",
+description: "Terceira opção",
+type: 3,
+required: false
+},
+{
+name: "opcao4",
+description: "Quarta opção",
+type: 3,
+required: false
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const pergunta = interaction.options.getString("pergunta", true);
+const opcoes = [
+interaction.options.getString("opcao1", true),
+interaction.options.getString("opcao2", true),
+interaction.options.getString("opcao3"),
+interaction.options.getString("opcao4")
+].filter(Boolean) as string[];
+const emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"];
+const description = opcoes.map((op, i) => `${emojis[i]} ${op}`).join("\n");
+
+const embed = new EmbedBuilder()
+  .setTitle(`📊 ${pergunta}`)
+  .setDescription(description)
+  .setColor(0x5865F2)
+  .setFooter({ text: `Enquete criada por ${interaction.user.tag}` })
+  .setTimestamp();
+
+const message = await interaction.reply({ embeds: [embed], fetchReply: true });
+
+for (let i = 0; i < opcoes.length; i++) {
+  await message.react(emojis[i]);
+}
+}
+};
+// ARQUIVO: src/commands/utils/lembrete.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+export const command = {
+name: "lembrete",
+description: "Define um lembrete",
+options: [
+{
+name: "tempo",
+description: "Tempo em minutos",
+type: 4,
+required: true
+},
+{
+name: "mensagem",
+description: "Mensagem do lembrete",
+type: 3,
+required: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const tempo = interaction.options.getInteger("tempo", true);
+const mensagem = interaction.options.getString("mensagem", true);
+await interaction.reply({
+  content: `⏰ Lembrete definido para daqui a ${tempo} minutos!`,
+  ephemeral: true
+});
+
+setTimeout(async () => {
+  try {
+    await interaction.user.send(`⏰ **Lembrete:** ${mensagem}`);
+  } catch {
+    await interaction.followUp({
+      content: `⏰ **Lembrete:** ${mensagem}`,
+      ephemeral: true
+    });
+  }
+}, tempo * 60 * 1000);
+}
+};
+// ============================================
+// COMANDOS - CATEGORIA: POLÍTICA
+// ============================================
+// ARQUIVO: src/commands/politica/ideologia.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "ideologia",
+description: "Define ou visualiza sua ideologia política",
+options: [
+{
+name: "acao",
+description: "Ação",
+type: 3,
+required: true,
+choices: [
+{ name: "Definir", value: "set" },
+{ name: "Ver", value: "view" },
+{ name: "Remover", value: "remove" }
+]
+},
+{
+name: "ideologia",
+description: "Sua ideologia",
+type: 3,
+required: false,
+choices: [
+{ name: "Conservador", value: "conservador" },
+{ name: "Liberal", value: "liberal" },
+{ name: "Libertário", value: "libertario" },
+{ name: "Nacionalista", value: "nacionalista" },
+{ name: "Social-Democrata", value: "socialdemocrata" },
+{ name: "Outro", value: "outro" }
+]
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const acao = interaction.options.getString("acao", true);
+const userId = interaction.user.id;
+if (acao === "set") {
+  const ideologia = interaction.options.getString("ideologia", true);
+  Database.set("politics", userId, { ideologia });
+
+  await interaction.reply({
+    content: `✅ Sua ideologia foi definida como **${ideologia}**!`,
+    ephemeral: true
+  });
+} else if (acao === "view") {
+  const data = Database.get("politics", userId);
+
+  if (!data?.ideologia) {
+    return interaction.reply({
+      content: "❌ Você ainda não definiu sua ideologia! Use `/ideologia acao:Definir`",
+      ephemeral: true
+    });
+  }
+
+  await interaction.reply({
+    content: `🏛️ Sua ideologia: **${data.ideologia}**`,
+    ephemeral: true
+  });
+} else {
+  Database.set("politics", userId, {});
+  await interaction.reply({
+    content: "✅ Sua ideologia foi removida!",
+    ephemeral: true
+  });
+}
+}
+};
+// ARQUIVO: src/commands/politica/avaliar-politico.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "avaliar-politico",
+description: "Avalia um político",
+options: [
+{
+name: "nome",
+description: "Nome do político",
+type: 3,
+required: true
+},
+{
+name: "nota",
+description: "Nota de 0 a 10",
+type: 4,
+required: true
+},
+{
+name: "comentario",
+description: "Comentário sobre o político",
+type: 3,
+required: false
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const nome = interaction.options.getString("nome", true);
+const nota = interaction.options.getInteger("nota", true);
+const comentario = interaction.options.getString("comentario") || "Sem comentário";
+if (nota < 0 || nota > 10) {
+  return interaction.reply({
+    content: "❌ A nota deve ser entre 0 e 10!",
+    ephemeral: true
+  });
+}
+
+const embed = new EmbedBuilder()
+  .setTitle(`⭐ Avaliação: ${nome}`)
+  .setColor(nota >= 7 ? 0x00FF00 : nota >= 4 ? 0xFFFF00 : 0xFF0000)
+  .addFields(
+    { name: "Nota", value: `${nota}/10`, inline: true },
+    { name: "Avaliado por", value: interaction.user.tag, inline: true },
+    { name: "Comentário", value: comentario, inline: false }
+  )
+  .setTimestamp();
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/politica/politicometro.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+export const command = {
+name: "politicometro",
+description: "Mede o quão político você é",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const porcentagem = Math.floor(Math.random() * 101);
+let emoji = "🤔";
+let mensagem = "";
+
+if (porcentagem >= 80) {
+  emoji = "🏛️";
+  mensagem = "Você vive e respira política!";
+} else if (porcentagem >= 50) {
+  emoji = "📰";
+  mensagem = "Você é bem engajado politicamente!";
+} else if (porcentagem >= 20) {
+  emoji = "😐";
+  mensagem = "Você tem algum interesse político.";
+} else {
+  emoji = "😴";
+  mensagem = "Política não é muito sua praia.";
+}
+
+await interaction.reply({
+  content: `${emoji} **Politicômetro**\n${interaction.user.tag} é **${porcentagem}%** político!\n${mensagem}`
+});
+}
+};
+// ARQUIVO: src/commands/politica/debater.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "debater",
+description: "Inicia um debate político",
+options: [
+{
+name: "topico",
+description: "Tópico do debate",
+type: 3,
+required: true
+},
+{
+name: "posicao",
+description: "Sua posição",
+type: 3,
+required: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const topico = interaction.options.getString("topico", true);
+const posicao = interaction.options.getString("posicao", true);
+const embed = new EmbedBuilder()
+  .setTitle(`💬 Debate: ${topico}`)
+  .setDescription(`**Posição inicial de ${interaction.user.tag}:**\n${posicao}`)
+  .setColor(0x5865F2)
+  .setFooter({ text: "Participe nos comentários!" })
+  .setTimestamp();
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/politica/manifesto.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "manifesto",
+description: "Cria um manifesto político",
+options: [
+{
+name: "titulo",
+description: "Título do manifesto",
+type: 3,
+required: true
+},
+{
+name: "conteudo",
+description: "Conteúdo do manifesto",
+type: 3,
+required: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const titulo = interaction.options.getString("titulo", true);
+const conteudo = interaction.options.getString("conteudo", true);
+const embed = new EmbedBuilder()
+  .setTitle(`📜 ${titulo}`)
+  .setDescription(conteudo)
+  .setColor(0xFF5733)
+  .setFooter({ text: `Manifesto de ${interaction.user.tag}` })
+  .setTimestamp();
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ============================================
+// COMANDOS - CATEGORIA: ECONOMIA
+// ============================================
+// ARQUIVO: src/commands/economia/economia.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "economia",
+description: "Mostra seu saldo",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const userId = interaction.user.id;
+const data = Database.get("economy", userId) || { balance: 0, bank: 0 };
+const embed = new EmbedBuilder()
+  .setTitle(`💰 Economia de ${interaction.user.tag}`)
+  .setColor(0xFFD700)
+  .addFields(
+    { name: "💵 Carteira", value: `R$ ${data.balance || 0}`, inline: true },
+    { name: "🏦 Banco", value: `R$ ${data.bank || 0}`, inline: true },
+    { name: "💎 Total", value: `R$ ${(data.balance || 0) + (data.bank || 0)}`, inline: true }
+  );
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/economia/trabalhar.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "trabalhar",
+description: "Trabalhe e ganhe dinheiro",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const userId = interaction.user.id;
+const data = Database.get("economy", userId) || { balance: 0, bank: 0, lastWork: 0 };
+const now = Date.now();
+const cooldown = 60 * 60 * 1000; // 1 hora
+
+if (data.lastWork && (now - data.lastWork) < cooldown) {
+  const timeLeft = Math.ceil((cooldown - (now - data.lastWork)) / 1000 / 60);
+  return interaction.reply({
+    content: `⏰ Você já trabalhou recentemente! Aguarde ${timeLeft} minutos.`,
+    ephemeral: true
+  });
+}
+
+const ganho = Math.floor(Math.random() * 500) + 100;
+data.balance = (data.balance || 0) + ganho;
+data.lastWork = now;
+
+Database.set("economy", userId, data);
+
+const jobs = [
+  "entregou pizza", "consertou computadores", "deu aula particular",
+  "fez freela de design", "programou um site", "vendeu produtos online"
+];
+
+const job = jobs[Math.floor(Math.random() * jobs.length)];
+
+await interaction.reply({
+  content: `💼 Você ${job} e ganhou **R$ ${ganho}**!`
+});
+}
+};
+// ARQUIVO: src/commands/economia/daily.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "daily",
+description: "Resgata sua recompensa diária",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const userId = interaction.user.id;
+const data = Database.get("economy", userId) || { balance: 0, bank: 0, lastDaily: 0 };
+const now = Date.now();
+const cooldown = 24 * 60 * 60 * 1000; // 24 horas
+
+if (data.lastDaily && (now - data.lastDaily) < cooldown) {
+  const timeLeft = Math.ceil((cooldown - (now - data.lastDaily)) / 1000 / 60 / 60);
+  return interaction.reply({
+    content: `⏰ Você já resgatou hoje! Volte em ${timeLeft} horas.`,
+    ephemeral: true
+  });
+}
+
+const reward = 1000;
+data.balance = (data.balance || 0) + reward;
+data.lastDaily = now;
+
+Database.set("economy", userId, data);
+
+await interaction.reply({
+  content: `🎁 Você resgatou sua recompensa diária de **R$ ${reward}**!`
+});
+}
+};
+// ARQUIVO: src/commands/economia/investir.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "investir",
+description: "Investe dinheiro (risco de perder)",
+options: [
+{
+name: "quantia",
+description: "Quanto deseja investir",
+type: 4,
+required: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const quantia = interaction.options.getInteger("quantia", true);
+const userId = interaction.user.id;
+const data = Database.get("economy", userId) || { balance: 0 };
+if (quantia < 100) {
+  return interaction.reply({
+    content: "❌ Você precisa investir no mínimo R$ 100!",
+    ephemeral: true
+  });
+}
+
+if (data.balance < quantia) {
+  return interaction.reply({
+    content: "❌ Você não tem dinheiro suficiente!",
+    ephemeral: true
+  });
+}
+
+const success = Math.random() > 0.5;
+const multiplier = success ? (Math.random() * 0.5 + 1) : -(Math.random() * 0.5);
+const resultado = Math.floor(quantia * multiplier);
+
+data.balance += resultado;
+Database.set("economy", userId, data);
+
+if (success) {
+  await interaction.reply({
+    content: `📈 **Investimento bem-sucedido!** Você ganhou **R$ ${resultado}**!`
+  });
+} else {
+  await interaction.reply({
+    content: `📉 **Investimento fracassou!** Você perdeu **R$ ${Math.abs(resultado)}**!`
+  });
+}
+}
+};
+// ARQUIVO: src/commands/economia/ranking.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "ranking",
+description: "Mostra o ranking de economia",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const allData = Database.getAll("economy");
+const sorted = Object.entries(allData)
+  .map(([userId, data]: [string, any]) => ({
+    userId,
+    total: (data.balance || 0) + (data.bank || 0)
+  }))
+  .sort((a, b) => b.total - a.total)
+  .slice(0, 10);
+
+if (sorted.length === 0) {
+  return interaction.reply({
+    content: "❌ Nenhum dado de economia encontrado!",
+    ephemeral: true
+  });
+}
+
+const description = await Promise.all(
+  sorted.map(async (entry, index) => {
+    const user = await client.users.fetch(entry.userId).catch(() => null);
+    const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : `${index + 1}.`;
+    return `${medal} **${user?.tag || "Usuário Desconhecido"}** - R$ ${entry.total}`;
+  })
+);
+
+const embed = new EmbedBuilder()
+  .setTitle("🏆 Ranking de Economia")
+  .setDescription(description.join("\n"))
+  .setColor(0xFFD700)
+  .setTimestamp();
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/economia/transferir.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+import { Database } from "../../utils/database";
+export const command = {
+name: "transferir",
+description: "Transfere dinheiro para outro usuário",
+options: [
+{
+name: "usuario",
+description: "Usuário que receberá",
+type: 6,
+required: true
+},
+{
+name: "quantia",
+description: "Quantia a transferir",
+type: 4,
+required: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const target = interaction.options.getUser("usuario", true);
+const quantia = interaction.options.getInteger("quantia", true);
+const senderId = interaction.user.id;
+if (target.id === senderId) {
+  return interaction.reply({
+    content: "❌ Você não pode transferir para si mesmo!",
+    ephemeral: true
+  });
+}
+
+if (quantia < 1) {
+  return interaction.reply({
+    content: "❌ A quantia deve ser maior que zero!",
+    ephemeral: true
+  });
+}
+
+const senderData = Database.get("economy", senderId) || { balance: 0 };
+
+if (senderData.balance < quantia) {
+  return interaction.reply({
+    content: "❌ Você não tem saldo suficiente!",
+    ephemeral: true
+  });
+}
+
+const receiverData = Database.get("economy", target.id) || { balance: 0, bank: 0 };
+
+senderData.balance -= quantia;
+receiverData.balance = (receiverData.balance || 0) + quantia;
+
+Database.set("economy", senderId, senderData);
+Database.set("economy", target.id, receiverData);
+
+await interaction.reply({
+  content: `✅ Você transferiu **R$ ${quantia}** para ${target.tag}!`
+});
+
+try {
+  await targetKContinuar.send(💰 Você recebeu **R$ ${quantia}** de ${interaction.user.tag}!);
+} catch {}
+}
+};
+// ARQUIVO: src/commands/economia/loja.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "loja",
+description: "Mostra a loja de itens",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const embed = new EmbedBuilder()
+.setTitle("🛒 Loja")
+.setColor(0x5865F2)
+.setDescription("Itens disponíveis para compra:")
+.addFields(
+{ name: "🎨 Cargo Colorido", value: "R$ 5.000", inline: true },
+{ name: "⭐ VIP (30 dias)", value: "R$ 10.000", inline: true },
+{ name: "🎭 Nome Personalizado", value: "R$ 3.000", inline: true },
+{ name: "🔊 Canal Privado", value: "R$ 15.000", inline: true }
+)
+.setFooter({ text: "Em breve: sistema de compra!" });
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ============================================
+// COMANDOS - CATEGORIA: MEMES
+// ============================================
+// ARQUIVO: src/commands/memes/meme.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "meme",
+description: "Gera um meme aleatório",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const memes = [
+"https://i.imgur.com/Q3cUg29.gif",
+"https://i.imgur.com/removed.png",
+"https://i.imgur.com/sample.jpg"
+];
+const meme = memes[Math.floor(Math.random() * memes.length)];
+
+const embed = new EmbedBuilder()
+  .setTitle("😂 Meme Aleatório")
+  .setImage(meme)
+  .setColor(0xFF5733);
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+// ARQUIVO: src/commands/memes/piada.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+export const command = {
+name: "piada",
+description: "Conta uma piada",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const piadas = [
+"Por que o livro de matemática se suicidou? Porque tinha muitos problemas!",
+"O que o pato disse para a pata? Vem Quá!",
+"Por que a galinha atravessou a rua? Para chegar do outro lado!",
+"Qual é o fim da picada? Quando o pernilongo vai embora!",
+"O que o tomate foi fazer no banco? Foi tirar extrato!"
+];
+const piada = piadas[Math.floor(Math.random() * piadas.length)];
+
+await interaction.reply({
+  content: `😂 ${piada}`
+});
+}
+};
+// ARQUIVO: src/commands/memes/8ball.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+export const command = {
+name: "8ball",
+description: "Faça uma pergunta para a bola mágica",
+options: [
+{
+name: "pergunta",
+description: "Sua pergunta",
+type: 3,
+required: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const pergunta = interaction.options.getString("pergunta", true);
+const respostas = [
+  "Sim!", "Não!", "Talvez...", "Com certeza!",
+  "Definitivamente não!", "Pergunte novamente mais tarde",
+  "É melhor você não saber", "Sim, em seus sonhos",
+  "Absolutamente!", "Nem pensar!"
+];
+
+const resposta = respostas[Math.floor(Math.random() * respostas.length)];
+
+await interaction.reply({
+  content: `🎱 **Pergunta:** ${pergunta}\n**Resposta:** ${resposta}`
+});
+}
+};
+// ARQUIVO: src/commands/memes/emoji.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+export const command = {
+name: "emoji",
+description: "Gera um emoji aleatório",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const emojis = ["😀", "😂", "🤣", "😊", "😍", "🥳", "🤔", "😎", "🤯", "🔥", "💯", "👍", "🎉", "❤️", "⭐"];
+const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+
+await interaction.reply({
+  content: `Emoji aleatório: ${emoji}`
+});
+}
+};
+// ARQUIVO: src/commands/memes/dado.ts
+import { Client, ChatInputCommandInteraction } from "discord.js";
+export const command = {
+name: "dado",
+description: "Rola um dado",
+options: [
+{
+name: "lados",
+description: "Número de lados do dado (padrão: 6)",
+type: 4,
+required: false
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const lados = interaction.options.getInteger("lados") || 6;
+if (lados < 2 || lados > 100) {
+  return interaction.reply({
+    content: "❌ O dado deve ter entre 2 e 100 lados!",
+    ephemeral: true
+  });
+}
+
+const resultado = Math.floor(Math.random() * lados) + 1;
+
+await interaction.reply({
+  content: `🎲 Você rolou um **D${lados}** e tirou: **${resultado}**!`
+});
+}
+};
+// ============================================
+// COMANDOS - CATEGORIA: SISTEMA
+// ============================================
+// ARQUIVO: src/commands/sistema/ticket.ts
+import { Client, ChatInputCommandInteraction, ChannelType, PermissionFlagsBits } from "discord.js";
+export const command = {
+name: "ticket",
+description: "Abre um ticket de suporte",
+options: [
+{
+name: "assunto",
+description: "Assunto do ticket",
+type: 3,
+requiredw: true
+}
+],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const assunto = interaction.options.getString("assunto", true);
+const guild = interaction.guild!;
+const ticketChannel = await guild.channels.create({
+  name: `ticket-${interaction.user.username}`,
+  type: ChannelType.GuildText,
+  parent: guild.channels.cache.find(c => c.name === "tickets" && c.type === ChannelType.GuildCategory)?.id,
+  permissionOverwrites: [
+    {
+      id: guild.id,
+      deny: [PermissionFlagsBits.ViewChannel]
+    },
+    {
+      id: interaction.user.id,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]
+    }
+  ]
+});
+
+await ticketChannel.send({
+  content: `🎫 **Ticket aberto por ${interaction.user}**\n**Assunto:** ${assunto}\n\nUm moderador irá atendê-lo em breve.`
+});
+
+await interaction.reply({
+  content: `✅ Ticket criado: ${ticketChannel}`,
+  ephemeral: true
+});
+}
+};
+// ARQUIVO: src/commands/sistema/logs.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder, TextChannel } from "discord.js";
+export const command = {
+name: "logs",
+description: "Mostra os logs recentes",
+perms: ["ManageGuild"],
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const logsChannel = interaction.guild?.channels.cache.find(
+c => c.name === "logs"
+) as TextChannel;
+if (!logsChannel) {
+  return interaction.reply({
+    content: "❌ Canal de logs não encontrado!",
+    ephemeral: true
+  });
+}
+
+const messages = await logsChannel.messages.fetch({ limit: 10 });
+
+const embed = new EmbedBuilder()
+  .setTitle("📋 Logs Recentes")
+  .setDescription(messages.map(m => m.content).reverse().join("\n") || "Sem logs")
+  .setColor(0x5865F2);
+
+await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+};
+// ARQUIVO: src/commands/sistema/status.ts
+import { Client, ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
+export const command = {
+name: "status",
+description: "Mostra o status do bot",
+async run(client: Client, interaction: ChatInputCommandInteraction) {
+const uptime = process.uptime();
+const days = Math.floor(uptime / 86400);
+const hours = Math.floor(uptime / 3600) % 24;
+const minutes = Math.floor(uptime / 60) % 60;
+const embed = new EmbedBuilder()
+  .setTitle("📊 Status do Bot")
+  .setColor(0x00FF00)
+  .addFields(
+    { name: "⏱️ Uptime", value: `${days}d ${hours}h ${minutes}m`, inline: true },
+    { name: "📡 Ping", value: `${client.ws.ping}ms`, inline: true },
+    { name: "🏰 Servidores", value: client.guilds.cache.size.toString(), inline: true },
+    { name: "👥 Usuários", value: client.users.cache.size.toString(), inline: true },
+    { name: "💾 Memória", value: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`, inline: true }
+  )
+  .setTimestamp();
+
+await interaction.reply({ embeds: [embed] });
+}
+};
+
